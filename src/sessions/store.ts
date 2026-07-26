@@ -20,6 +20,7 @@ export interface EditorSession {
   schema: Record<string, SettingDefinition[]>;
   values: Record<string, Record<string, unknown>>;
   applied: boolean;
+  claimToken: string | null;
 }
 
 class SessionStore {
@@ -30,7 +31,7 @@ class SessionStore {
     this.cleanupTimer = setInterval(() => this.cleanup(), 30_000);
   }
 
-  create(data: Omit<EditorSession, 'createdAt' | 'expiresAt' | 'applied'>): EditorSession {
+  create(data: Omit<EditorSession, 'createdAt' | 'expiresAt' | 'applied' | 'claimToken'>): EditorSession {
     const now = Date.now();
     const expiresInMinutes = 15;
     const session: EditorSession = {
@@ -38,6 +39,7 @@ class SessionStore {
       createdAt: now,
       expiresAt: now + expiresInMinutes * 60 * 1000,
       applied: false,
+      claimToken: null,
     };
     this.sessions.set(session.sessionId, session);
     return session;

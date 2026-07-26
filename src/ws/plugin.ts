@@ -106,6 +106,10 @@ class PluginSessions {
     return this.sendByServerId(serverId, data);
   }
 
+  registerSession(sessionId: string, serverId: string): void {
+    this.bySessionId.set(sessionId, serverId);
+  }
+
   isConnected(sessionId: string): boolean {
     const serverId = this.bySessionId.get(sessionId);
     if (!serverId) return false;

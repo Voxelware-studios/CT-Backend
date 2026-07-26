@@ -28,11 +28,7 @@ router.post('/api/editor/create', (req, res) => {
     values,
   });
 
-  if (pluginSessions.isConnected(session_id)) {
-    pluginSessions.sendBySessionId(session_id, { type: 'session_created', session_id });
-  } else {
-    pluginSessions.sendByServerId(server_id, { type: 'session_created', session_id });
-  }
+  pluginSessions.registerSession(session_id, server_id);
 
   res.status(201).json({
     session_id: session.sessionId,
@@ -63,11 +59,20 @@ router.get('/api/editor/status', (req, res) => {
 
 router.get('/api/editor/:sessionId', (req, res) => {
   const { sessionId } = req.params;
+  const claimToken = (req.query.claim_token as string) || '';
   const session = sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: 'Session not found or expired' });
     return;
   }
+
+  if (session.claimToken !== null && session.claimToken !== claimToken) {
+    sessionStore.delete(sessionId);
+    res.status(409).json({ error: 'Session terminated: opened in another tab' });
+    return;
+  }
+
+  session.claimToken = claimToken || crypto.randomUUID();
 
   res.json({
     session_id: session.sessionId,
@@ -77,6 +82,22 @@ router.get('/api/editor/:sessionId', (req, res) => {
     schema: session.schema,
     values: session.values,
   });
+});
+
+router.post('/api/editor/:sessionId/release', (req, res) => {
+  const { sessionId } = req.params;
+  const claimToken = (req.query.claim_token as string) || (req.body?.claim_token as string) || '';
+  const session = sessionStore.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found or expired' });
+    return;
+  }
+  if (session.claimToken !== null && session.claimToken !== claimToken) {
+    res.status(403).json({ error: 'Not the session owner' });
+    return;
+  }
+  session.claimToken = null;
+  res.json({ status: 'released' });
 });
 
 router.post('/api/editor/apply', async (req, res) => {
