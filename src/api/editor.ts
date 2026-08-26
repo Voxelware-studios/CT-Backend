@@ -77,6 +77,7 @@ router.get('/api/editor/:sessionId', (req, res) => {
   res.json({
     session_id: session.sessionId,
     server_name: session.serverName,
+    server_id: session.serverId,
     plugin_version: session.pluginVersion,
     expires_at: session.expiresAt,
     schema: session.schema,

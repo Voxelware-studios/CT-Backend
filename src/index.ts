@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import { config } from './config/index.js';
 import { pluginSessions } from './ws/plugin.js';
 import editorRoutes from './api/editor.js';
+import healthRoutes from './api/health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +28,7 @@ wss.on('connection', (ws, req) => {
 });
 
 app.use(editorRoutes);
+app.use(healthRoutes);
 
 const frontendDist = path.resolve(__dirname, '../../frontend/dist');
 if (fs.existsSync(frontendDist)) {

@@ -2,17 +2,34 @@ import { WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { sessionStore } from '../sessions/store.js';
 
+const HEARTBEAT_TIMEOUT_MS = 30_000;
+
 interface PluginConnection {
   ws: WebSocket;
   serverId: string;
   serverName: string;
   pluginVersion: string;
   connectedAt: number;
+  lastHeartbeat: number;
+  lastHealth?: unknown;
+  status: 'connected' | 'disconnected';
 }
 
 class PluginSessions {
   private byServerId = new Map<string, PluginConnection>();
   private bySessionId = new Map<string, string>();
+  private timeoutTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.timeoutTimer = setInterval(() => this.checkHeartbeats(), 10_000);
+    sessionStore.onExpire((sessionId, serverId, reason) => {
+      this.sendByServerId(serverId, {
+        type: 'session_expired',
+        session_id: sessionId,
+        reason,
+      });
+    });
+  }
 
   handleConnection(ws: WebSocket, _req: IncomingMessage): void {
     let serverId: string | null = null;
@@ -37,8 +54,15 @@ class PluginSessions {
             serverName: msg.server_name || 'unknown',
             pluginVersion: msg.plugin_version || 'unknown',
             connectedAt: Date.now(),
+            lastHeartbeat: Date.now(),
+            status: 'connected',
           });
           ws.send(JSON.stringify({ type: 'register_ack', server_id: serverId }));
+          return;
+        }
+
+        if (msg.type === 'heartbeat') {
+          this.handleHeartbeat(msg);
           return;
         }
 
@@ -59,6 +83,20 @@ class PluginSessions {
           const sid = msg.session_id;
           if (sid && serverId) {
             this.bySessionId.set(sid, serverId);
+            const conn = this.byServerId.get(serverId);
+            if (conn) {
+              conn.lastHeartbeat = Date.now();
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'health_update') {
+          if (serverId) {
+            const conn = this.byServerId.get(serverId);
+            if (conn) {
+              conn.lastHealth = msg.payload || msg;
+            }
           }
           return;
         }
@@ -69,18 +107,43 @@ class PluginSessions {
 
     ws.on('close', () => {
       if (serverId) {
-        this.byServerId.delete(serverId);
-        for (const [sid, sid2] of this.bySessionId) {
-          if (sid2 === serverId) this.bySessionId.delete(sid);
+        const conn = this.byServerId.get(serverId);
+        if (conn) {
+          conn.status = 'disconnected';
         }
+        this.notifyFrontendDisconnection(serverId);
       }
     });
 
     ws.on('error', () => {
       if (serverId) {
-        this.byServerId.delete(serverId);
+        const conn = this.byServerId.get(serverId);
+        if (conn) {
+          conn.status = 'disconnected';
+        }
       }
     });
+  }
+
+  private handleHeartbeat(msg: any): void {
+    const serverId = msg.server_id;
+    if (!serverId) return;
+    const conn = this.byServerId.get(serverId);
+    if (!conn) return;
+
+    conn.lastHeartbeat = Date.now();
+    conn.status = 'connected';
+
+    conn.ws.send(JSON.stringify({
+      type: 'heartbeat_ack',
+      server_id: serverId,
+      timestamp: Date.now(),
+    }));
+
+    const sessionIds = this.getSessionsForServer(serverId);
+    for (const sid of sessionIds) {
+      sessionStore.touch(sid);
+    }
   }
 
   private handleApplyResult(msg: any): void {
@@ -91,6 +154,47 @@ class PluginSessions {
     if (msg.status === 'applied' || msg.results?.every((r: any) => r.success)) {
       sessionStore.touch(sid);
     }
+  }
+
+  private checkHeartbeats(): void {
+    const now = Date.now();
+    for (const [serverId, conn] of this.byServerId) {
+      if (conn.status === 'connected') {
+        const elapsed = now - conn.lastHeartbeat;
+        if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+          conn.status = 'disconnected';
+          this.notifyFrontendDisconnection(serverId);
+        }
+      }
+    }
+  }
+
+  private notifyFrontendDisconnection(serverId: string): void {
+    const sessionIds = this.getSessionsForServer(serverId);
+    for (const sid of sessionIds) {
+      const session = sessionStore.get(sid);
+      if (session) {
+        this.sendToSessionViewers(sid, {
+          type: 'server_status',
+          status: 'disconnected',
+          server_id: serverId,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+
+  private sendToSessionViewers(sessionId: string, data: unknown): void {
+    // This is a no-op for now; the frontend polls health status
+    // Future: could use server-sent events or extend WebSocket
+  }
+
+  private getSessionsForServer(serverId: string): string[] {
+    const sessions: string[] = [];
+    for (const [sid, sid2] of this.bySessionId) {
+      if (sid2 === serverId) sessions.push(sid);
+    }
+    return sessions;
   }
 
   sendByServerId(serverId: string, data: unknown): boolean {
@@ -108,13 +212,68 @@ class PluginSessions {
 
   registerSession(sessionId: string, serverId: string): void {
     this.bySessionId.set(sessionId, serverId);
+    const conn = this.byServerId.get(serverId);
+    if (conn) {
+      conn.lastHeartbeat = Date.now();
+    }
   }
 
   isConnected(sessionId: string): boolean {
     const serverId = this.bySessionId.get(sessionId);
     if (!serverId) return false;
     const conn = this.byServerId.get(serverId);
-    return !!conn && conn.ws.readyState === WebSocket.OPEN;
+    return !!conn && conn.ws.readyState === WebSocket.OPEN && conn.status === 'connected';
+  }
+
+  getServerStatus(serverId: string): string {
+    const conn = this.byServerId.get(serverId);
+    if (!conn) return 'disconnected';
+    if (conn.ws.readyState !== WebSocket.OPEN) return 'disconnected';
+    return conn.status;
+  }
+
+  getHealthByServerId(serverId: string): unknown | null {
+    const conn = this.byServerId.get(serverId);
+    return conn?.lastHealth || null;
+  }
+
+  getConnectedServers(): Array<{
+    serverId: string;
+    serverName: string;
+    pluginVersion: string;
+    connectedAt: number;
+    hasHealth: boolean;
+    status: string;
+    lastHeartbeat: number;
+  }> {
+    const servers: Array<{
+      serverId: string;
+      serverName: string;
+      pluginVersion: string;
+      connectedAt: number;
+      hasHealth: boolean;
+      status: string;
+      lastHeartbeat: number;
+    }> = [];
+    for (const conn of this.byServerId.values()) {
+      servers.push({
+        serverId: conn.serverId,
+        serverName: conn.serverName,
+        pluginVersion: conn.pluginVersion,
+        connectedAt: conn.connectedAt,
+        hasHealth: !!conn.lastHealth,
+        status: conn.status,
+        lastHeartbeat: conn.lastHeartbeat,
+      });
+    }
+    return servers;
+  }
+
+  destroy(): void {
+    if (this.timeoutTimer) {
+      clearInterval(this.timeoutTimer);
+      this.timeoutTimer = null;
+    }
   }
 }
 

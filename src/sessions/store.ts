@@ -23,21 +23,27 @@ export interface EditorSession {
   claimToken: string | null;
 }
 
+type ExpireCallback = (sessionId: string, serverId: string, reason: string) => void;
+
 class SessionStore {
   private sessions = new Map<string, EditorSession>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private expireCallback: ExpireCallback | null = null;
 
   constructor() {
     this.cleanupTimer = setInterval(() => this.cleanup(), 30_000);
   }
 
+  onExpire(callback: ExpireCallback): void {
+    this.expireCallback = callback;
+  }
+
   create(data: Omit<EditorSession, 'createdAt' | 'expiresAt' | 'applied' | 'claimToken'>): EditorSession {
     const now = Date.now();
-    const expiresInMinutes = 15;
     const session: EditorSession = {
       ...data,
       createdAt: now,
-      expiresAt: now + expiresInMinutes * 60 * 1000,
+      expiresAt: now + 300_000,
       applied: false,
       claimToken: null,
     };
@@ -45,14 +51,14 @@ class SessionStore {
     return session;
   }
 
-  private readonly expiryMinutes = 15;
-  private readonly expiryExtensionMs = 15 * 60 * 1000;
+  private readonly expiryExtensionMs = 300_000;
 
   get(sessionId: string): EditorSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     if (Date.now() > session.expiresAt) {
       this.sessions.delete(sessionId);
+      this.expireCallback?.(sessionId, session.serverId, 'Session expired');
       return undefined;
     }
     return session;
@@ -82,6 +88,7 @@ class SessionStore {
     for (const [id, session] of this.sessions) {
       if (now > session.expiresAt) {
         this.sessions.delete(id);
+        this.expireCallback?.(id, session.serverId, 'Heartbeat timeout');
       }
     }
   }
