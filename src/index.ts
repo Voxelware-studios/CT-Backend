@@ -6,10 +6,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { config } from './config/index.js';
+import { config, PANEL_VERSION, SUPPORTED_PLUGIN_VERSION } from './config/index.js';
 import { pluginSessions } from './ws/plugin.js';
+import versionRoutes from './api/version.js';
 import editorRoutes from './api/editor.js';
 import healthRoutes from './api/health.js';
+import moderationRoutes from './api/moderation.js';
+import playerRoutes from './api/players.js';
+import statsRoutes from './api/stats.js';
+import recordsRoutes from './api/records.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,8 +32,13 @@ wss.on('connection', (ws, req) => {
   pluginSessions.handleConnection(ws, req);
 });
 
+app.use(versionRoutes);
 app.use(editorRoutes);
 app.use(healthRoutes);
+app.use(moderationRoutes);
+app.use(playerRoutes);
+app.use(statsRoutes);
+app.use(recordsRoutes);
 
 const frontendDist = path.resolve(__dirname, '../../frontend/dist');
 if (fs.existsSync(frontendDist)) {
@@ -49,7 +59,10 @@ if (fs.existsSync(frontendDist)) {
 
 const protocol = config.ssl ? 'https' : 'http';
 server.listen(config.port, config.host, () => {
-  console.log(`CoreTuff Web Editor (${protocol}) listening on ${config.host}:${config.port}`);
+  console.log(
+    `CoreTuff Web Editor (${protocol}) ${PANEL_VERSION} listening on ${config.host}:${config.port} — ` +
+      `requires CoreTuff ${SUPPORTED_PLUGIN_VERSION}`,
+  );
 });
 
 function shutdown() {

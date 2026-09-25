@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { WebSocket } from 'ws';
 import { sessionStore } from '../sessions/store.js';
 import { pluginSessions } from '../ws/plugin.js';
+import { PANEL_VERSION, SUPPORTED_PLUGIN_VERSION, isSupportedPluginVersion } from '../config/index.js';
 
 const router = Router();
 
@@ -10,6 +11,19 @@ router.post('/api/editor/create', (req, res) => {
 
   if (!session_id || !server_name || !server_id || !schema || !values) {
     res.status(400).json({ error: 'Missing required fields: session_id, server_name, server_id, schema, values' });
+    return;
+  }
+
+  if (!isSupportedPluginVersion(plugin_version)) {
+    res.status(426).json({
+      error: 'Unsupported CoreTuff version',
+      message:
+        `This web panel (${PANEL_VERSION}) only supports CoreTuff ${SUPPORTED_PLUGIN_VERSION}. ` +
+        `Received CoreTuff ${plugin_version || 'unknown'}. Please update CoreTuff to ${SUPPORTED_PLUGIN_VERSION}.`,
+      supported_version: SUPPORTED_PLUGIN_VERSION,
+      received_version: plugin_version || 'unknown',
+      panel_version: PANEL_VERSION,
+    });
     return;
   }
 

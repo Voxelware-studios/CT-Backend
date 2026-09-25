@@ -1,6 +1,9 @@
 import { WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { sessionStore } from '../sessions/store.js';
+import { requestResponseManager } from './request-response.js';
+import { recordPluginConnect, recordPluginDisconnect, recordHealthUpdate } from '../services/stats.js';
+import { PANEL_VERSION, SUPPORTED_PLUGIN_VERSION, isSupportedPluginVersion } from '../config/index.js';
 
 const HEARTBEAT_TIMEOUT_MS = 30_000;
 
@@ -12,6 +15,7 @@ interface PluginConnection {
   connectedAt: number;
   lastHeartbeat: number;
   lastHealth?: unknown;
+  lastPlayers?: unknown;
   status: 'connected' | 'disconnected';
 }
 
@@ -44,6 +48,29 @@ class PluginSessions {
             ws.send(JSON.stringify({ type: 'error', message: 'Missing server_id' }));
             return;
           }
+          if (!isSupportedPluginVersion(msg.plugin_version)) {
+            console.warn(
+              `Rejected plugin connection from "${serverId}" (${msg.server_name || 'unknown'}): ` +
+                `CoreTuff ${msg.plugin_version || 'unknown'} is not supported by panel ${PANEL_VERSION} ` +
+                `(requires CoreTuff ${SUPPORTED_PLUGIN_VERSION}).`,
+            );
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'register_rejected',
+                  server_id: serverId,
+                  received_version: msg.plugin_version || 'unknown',
+                  supported_version: SUPPORTED_PLUGIN_VERSION,
+                  panel_version: PANEL_VERSION,
+                  message:
+                    `This web panel (${PANEL_VERSION}) only supports CoreTuff ${SUPPORTED_PLUGIN_VERSION}. ` +
+                    `Your server is running CoreTuff ${msg.plugin_version || 'unknown'} — please update CoreTuff.`,
+                }),
+              );
+            } catch { /* socket may already be closing */ }
+            ws.close(4003, 'unsupported plugin version');
+            return;
+          }
           const existing = this.byServerId.get(serverId);
           if (existing) {
             existing.ws.close(1000, 'replaced');
@@ -57,6 +84,9 @@ class PluginSessions {
             lastHeartbeat: Date.now(),
             status: 'connected',
           });
+          try {
+            recordPluginConnect({ server_id: serverId, server_name: msg.server_name, plugin_version: msg.plugin_version });
+          } catch { /* stats recording should never break the session */ }
           ws.send(JSON.stringify({ type: 'register_ack', server_id: serverId }));
           return;
         }
@@ -97,6 +127,82 @@ class PluginSessions {
             if (conn) {
               conn.lastHealth = msg.payload || msg;
             }
+            try {
+              recordHealthUpdate(serverId, (msg.payload || msg) as any);
+            } catch { /* stats recording should never break the session */ }
+          }
+          return;
+        }
+
+        if (msg.type === 'moderation_response') {
+          if (msg.requestId) {
+            if (msg.error) {
+              requestResponseManager.reject(msg.requestId, msg.error);
+            } else {
+              requestResponseManager.resolve(msg.requestId, msg.result);
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'player_response') {
+          if (msg.requestId) {
+            if (msg.error) {
+              requestResponseManager.reject(msg.requestId, msg.error);
+            } else {
+              requestResponseManager.resolve(msg.requestId, msg.result);
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'player_snapshot') {
+          if (serverId) {
+            const conn = this.byServerId.get(serverId);
+            if (conn) {
+              conn.lastPlayers = msg.payload || msg;
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'player_update') {
+          if (serverId) {
+            const conn = this.byServerId.get(serverId);
+            if (conn && msg.payload) {
+              const payload = msg.payload as any;
+              const current = conn.lastPlayers as any;
+              if (current && current.players) {
+                if (payload.action === 'leave' && payload.player?.uuid) {
+                  current.players = current.players.filter((p: any) => p.uuid !== payload.player.uuid);
+                  current.online_count = current.players.length;
+                } else if (payload.action === 'join' && payload.player) {
+                  const exists = current.players.find((p: any) => p.uuid === payload.player.uuid);
+                  if (!exists) {
+                    current.players.push(payload.player);
+                    current.online_count = current.players.length;
+                  }
+                } else if (payload.player?.uuid) {
+                  const idx = current.players.findIndex((p: any) => p.uuid === payload.player.uuid);
+                  if (idx >= 0) {
+                    current.players[idx] = { ...current.players[idx], ...payload.player };
+                  }
+                }
+              }
+            }
+          }
+          return;
+        }
+
+        if (msg.type === 'moderation_update') {
+          if (serverId) {
+            const sessionIds = this.getSessionsForServer(serverId);
+            for (const sid of sessionIds) {
+              this.sendToSessionViewers(sid, {
+                type: 'moderation_update',
+                timestamp: msg.timestamp || Date.now(),
+              });
+            }
           }
           return;
         }
@@ -111,6 +217,9 @@ class PluginSessions {
         if (conn) {
           conn.status = 'disconnected';
         }
+        try {
+          recordPluginDisconnect(serverId);
+        } catch { /* stats recording should never break the session */ }
         this.notifyFrontendDisconnection(serverId);
       }
     });
@@ -237,6 +346,11 @@ class PluginSessions {
     return conn?.lastHealth || null;
   }
 
+  getPlayersByServerId(serverId: string): unknown | null {
+    const conn = this.byServerId.get(serverId);
+    return conn?.lastPlayers || null;
+  }
+
   getConnectedServers(): Array<{
     serverId: string;
     serverName: string;
@@ -274,6 +388,21 @@ class PluginSessions {
       clearInterval(this.timeoutTimer);
       this.timeoutTimer = null;
     }
+    requestResponseManager.cleanup();
+  }
+
+  queryPlugin(
+    serverId: string,
+    action: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = 15_000,
+  ): Promise<unknown> {
+    const conn = this.byServerId.get(serverId);
+    if (!conn || conn.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Server not connected'));
+    }
+    const messageType = action.startsWith('player_') ? 'player_query' : 'moderation_query';
+    return requestResponseManager.createRequest(conn.ws, action, params, timeoutMs, messageType);
   }
 }
 
