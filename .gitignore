@@ -1,6 +1,7 @@
-node_modules/
-dist/
-.env
-*.log
-.DS_Store
-data/
+*
+!src/
+!src/**
+
+!package-lock.json
+!package.json
+!tsconfig.json
