@@ -8,17 +8,29 @@ export interface AppConfig {
 }
 
 /** Web panel version. Keep in sync with frontend/src/lib/version.ts (APP_VERSION). */
-export const PANEL_VERSION = 'v1.0-Alpha-3';
+export const PANEL_VERSION = 'v1.0-Alpha-3.1';
 
 /**
  * Only this CoreTuff plugin version is accepted by this panel build.
  * Older (and newer) versions are rejected at WebSocket registration and session creation.
  * Keep in sync with frontend/src/lib/version.ts (SUPPORTED_PLUGIN_VERSION).
  */
-export const SUPPORTED_PLUGIN_VERSION = '2.0-Nightly-3';
+
+export const SUPPORTED_PLUGIN_VERSIONS = [
+  '2.0-Nightly-3',
+  '2.0-Nightly-4',
+  'future-update',
+  '1.1',
+  '1.2',
+] as const;
 
 export function isSupportedPluginVersion(version: unknown): boolean {
-  return typeof version === 'string' && version.trim() === SUPPORTED_PLUGIN_VERSION;
+  return (
+      typeof version === 'string' &&
+      SUPPORTED_PLUGIN_VERSIONS.includes(
+          version.trim() as (typeof SUPPORTED_PLUGIN_VERSIONS)[number]
+      )
+  );
 }
 
 function loadConfig(): AppConfig {
