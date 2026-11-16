@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import { sessionStore } from '../sessions/store.js';
 import { requestResponseManager } from './request-response.js';
 import { recordPluginConnect, recordPluginDisconnect, recordHealthUpdate } from '../services/stats.js';
-import { PANEL_VERSION, SUPPORTED_PLUGIN_VERSION, isSupportedPluginVersion } from '../config/index.js';
+import { PANEL_VERSION, SUPPORTED_PLUGIN_VERSIONS, isSupportedPluginVersion } from '../config/index.js';
 
 const HEARTBEAT_TIMEOUT_MS = 30_000;
 
@@ -52,7 +52,7 @@ class PluginSessions {
             console.warn(
               `Rejected plugin connection from "${serverId}" (${msg.server_name || 'unknown'}): ` +
                 `CoreTuff ${msg.plugin_version || 'unknown'} is not supported by panel ${PANEL_VERSION} ` +
-                `(requires CoreTuff ${SUPPORTED_PLUGIN_VERSION}).`,
+                `(requires CoreTuff ${SUPPORTED_PLUGIN_VERSIONS}).`,
             );
             try {
               ws.send(
@@ -60,10 +60,10 @@ class PluginSessions {
                   type: 'register_rejected',
                   server_id: serverId,
                   received_version: msg.plugin_version || 'unknown',
-                  supported_version: SUPPORTED_PLUGIN_VERSION,
+                  supported_version: SUPPORTED_PLUGIN_VERSIONS,
                   panel_version: PANEL_VERSION,
                   message:
-                    `This web panel (${PANEL_VERSION}) only supports CoreTuff ${SUPPORTED_PLUGIN_VERSION}. ` +
+                    `This web panel (${PANEL_VERSION}) only supports CoreTuff ${SUPPORTED_PLUGIN_VERSIONS}. ` +
                     `Your server is running CoreTuff ${msg.plugin_version || 'unknown'} — please update CoreTuff.`,
                 }),
               );

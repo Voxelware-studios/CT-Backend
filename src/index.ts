@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { config, PANEL_VERSION, SUPPORTED_PLUGIN_VERSION } from './config/index.js';
+import { config, PANEL_VERSION, SUPPORTED_PLUGIN_VERSIONS } from './config/index.js';
 import { pluginSessions } from './ws/plugin.js';
 import versionRoutes from './api/version.js';
 import editorRoutes from './api/editor.js';
@@ -61,7 +61,7 @@ const protocol = config.ssl ? 'https' : 'http';
 server.listen(config.port, config.host, () => {
   console.log(
     `CoreTuff Web Editor (${protocol}) ${PANEL_VERSION} listening on ${config.host}:${config.port} — ` +
-      `requires CoreTuff ${SUPPORTED_PLUGIN_VERSION}`,
+      `requires CoreTuff ${SUPPORTED_PLUGIN_VERSIONS}`,
   );
 });
 
